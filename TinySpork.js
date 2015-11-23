@@ -1,93 +1,103 @@
-var net = require("net");
+
+"use strict";
+
+const net = require("net");
+const fs  = require("fs");
 
 
-function Connection(port)
-{
-    var lines = [ ];
-    var connected = false;
-    var closed = false;
+class Connection {
 
-    var socket = net.connect({ "port": port }, function() {
-        connected = true;
+    constructor()
+    {
+        this._lines     = [ ];
+        this._closed    = false;
 
-        lines.forEach(function(line) {
-            send(line);
+        let socket = net.createConnection("/tmp/TinySpork.sock", () => {
+            this._socket = socket;
+
+            this._lines.forEach(line => {
+                this.send(line);
+            });
+
+            if (this._closed) {
+                this._socket.end();
+            }
         });
 
-        if (closed) {
-            socket.end();
-        }
-    });
+        socket.on("error", () => {
+            this._closed = true;
+            this._socket = null;
+        })
+    }
 
-    socket.on("error", function() {
-        closed = true;
-        connected = false;
-    });
+    close()
+    {
+        this._closed = true;
 
-    function close() {
-        closed = true;
-
-        if (connected) {
-            socket.end();
+        if (this._socket) {
+            this._socket.end();
+            this._socket = null;
         }
     }
 
-    function send(line){
-        if (connected) {
-            socket.write(line + "\n");
+
+    send(line)
+    {
+        if (this._socket) {
+            this._socket.write(line + "\n");
         } else {
-            lines.push(line);
-        }
-    }
-
-    return {
-        send: send,
-        close: close
-    };
-}
-
-
-function TinySpork(port, projectDir)
-{
-    this._port       = port;
-    this._projectDir = projectDir;
-    this._connection = null;
-}
-
-
-TinySpork.prototype.begin = function()
-{
-    if (!this._connection) {
-        this._connection = new Connection(this._port);
-        this._connection.send("[begin] " + this._projectDir);
+            this._lines.push(line);
+        }    
     }
 }
 
 
-TinySpork.prototype.notice = function(line)
-{
-    if (this._connection) {
-        this._connection.send("[notice] " + line);
-    }
-}
+module.exports = class TinySpork {
 
-
-TinySpork.prototype.error = function(line)
-{
-    if (this._connection) {
-        this._connection.send(line);
-    }
-}
-
-
-TinySpork.prototype.end = function()
-{
-    if (this._connection) {
-        this._connection.send("[end]");
-        this._connection.close();
+    constructor(projectDir)
+    {
+        this._projectDir = projectDir;
         this._connection = null;
     }
+
+    begin()
+    {
+        if (!this._connection) {
+            this._connection = new Connection();
+            this._connection.send("[begin] " + this._projectDir);
+        }
+    }
+
+    info(line)
+    {
+        if (this._connection) {
+            this._connection.send("[info] " + line);
+        }
+    }
+
+    error(lineOrLines)
+    {
+        if (this._connection) {
+            if (Array.isArray(lineOrLines)) {
+                if (lineOrLines.length) {
+                    this._connection.send("[start-lines]");
+                    lineOrLines.forEach(line => { this._connection.send(line); })
+                    this._connection.send("[end-lines]");
+                }
+
+            } else {
+                this._connection.send(line);
+            }
+        }
+    }
+
+    end()
+    {
+        if (this._connection) {
+            this._connection.send("[end]");
+            this._connection.close();
+            this._connection = null;
+        }
+    }
+
 }
-
-
-module.exports = TinySpork;

@@ -1,11 +1,7 @@
 import sublime
-import codecs
-import subprocess
 import threading
-import socketserver
+import socket, os
 import re
-
-HOST, PORT = "localhost", 9666
 
 sProjectToManagerMap = { }
 
@@ -30,7 +26,11 @@ class ProjectIssueManager():
     def __init__(self, window, project):
         self.window = window
         self.issueCount = 0
-        
+        self.groupCount = 0
+        self.lines = [ ];
+        self.issueMap = { };
+        self.project = project
+
         panel = self.window.create_output_panel("TinySpork")
         panel.settings().set("result_file_regex", "^([^:]*):([0-9]+):?([0-9]+)?:? (.*)$")
         panel.settings().set("result_line_regex", "")
@@ -43,33 +43,107 @@ class ProjectIssueManager():
 
         self.panel = panel
 
-    def handleBegin(self):
-        self.issueCount = 0
-        self.panel.run_command("select_all")
-        self.panel.run_command("right_delete")
+    def _append(self, lines):
+        self.panel.set_read_only(False)
+        self.panel.run_command("append", { "characters": "\n".join(lines) + "\n", "scroll_to_end": True })
+        self.panel.set_read_only(True)
 
-    def handleEnd(self):
-        if (self.issueCount == 0):
-            self.window.run_command("hide_panel", { "panel": "output.TinySpork" })
 
-    def handleInfoLine(self, string):
-        self.panel.run_command("append", { "characters": string + "\n" })
-        self.window.run_command("show_panel", { "panel": "output.TinySpork" })
+    def _flush(self):
+        for line in self.lines:
+            m = re.match("^([^:]*):([0-9]+):?([0-9]+)?:? (.*)$", line)
+            if m:
+                file = m.group(1).strip()
+                lineNumber = int(m.group(2))
 
-    def handleErrorLine(self, string):
-        self.panel.run_command("append", { "characters": string + "\n" })
+                if file in self.issueMap:
+                    self.issueMap[file].append(lineNumber)
+                else:
+                    self.issueMap[file] = [ lineNumber ]
 
-        self.issueCount = self.issueCount + 1
+        self._append(self.lines);
+
         if (self.issueCount > 0):
             self.window.run_command("show_panel", { "panel": "output.TinySpork" })
 
+        self.lines = [ ]
 
-class SporkTCPHandler(socketserver.ThreadingMixIn, socketserver.StreamRequestHandler):
-    def handle(self):
-        while 1:
+    def handleBegin(self):
+        self.issueCount = 0
+        self.panel.set_read_only(False)
+        self.panel.run_command("select_all")
+        self.panel.run_command("right_delete")
+        self.panel.set_read_only(True)
+
+    def handleEnd(self):
+        for view in self.window.views():
+            view.erase_regions("TinySpork")
+
+        if (self.issueCount == 0):
+            self.window.run_command("hide_panel", { "panel": "output.TinySpork" })
+        else:
+            for key in self.issueMap:
+                view = self.window.find_open_file(self.project + "/" + key)
+                if view:
+                    icon  = view.settings().get("tiny_spork_icon", "dot")
+                    scope = view.settings().get("tiny_spork_scope", "invalid")
+
+                    regions = [ ]
+                    for lineNumber in self.issueMap[key]:
+                        regions.append(sublime.Region(
+                            view.text_point(lineNumber - 1, 0),
+                            view.text_point(lineNumber, 0) - 1
+                        ))
+
+                    view.add_regions("TinySpork", regions, scope, icon, sublime.DRAW_NO_OUTLINE | sublime.DRAW_NO_FILL | sublime.DRAW_STIPPLED_UNDERLINE | sublime.DRAW_EMPTY)
+
+        self.issueMap = { }
+
+    def handleStartLines(self):
+        self.groupCount = self.groupCount + 1
+
+    def handleEndLines(self):
+        self.groupCount = self.groupCount - 1
+
+        if (self.groupCount == 0):
+            self._flush();
+
+    def handleErrorLine(self, line):
+        self.lines.append(line)
+        self.issueCount = self.issueCount + 1
+
+        if (self.groupCount == 0):
+            self._flush();
+
+    def handleInfoLine(self, string):
+        self._append([ string ])
+        self.window.run_command("show_panel", { "panel": "output.TinySpork" })
+
+
+
+def serve_forever():
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    try:
+        os.remove("/tmp/TinySpork.sock")
+    except OSError:
+        pass
+
+    s.bind("/tmp/TinySpork.sock")
+    s.listen(5)
+
+    while (1):
+        conn, addr = s.accept()
+        manager = None
+
+        sublime.status_message("Building");
+
+        f = conn.makefile() 
+
+        for l in f:
             try:
-                line = self.rfile.readline().strip().decode()
-                m = re.match('(\[\w+?\])\s*(.*)', line)
+                line = l.strip()
+                m = re.match('(\[[-\w]+?\])\s*(.*)', line)
 
                 if m:
                     command = m.group(1)
@@ -88,6 +162,12 @@ class SporkTCPHandler(socketserver.ThreadingMixIn, socketserver.StreamRequestHan
 
                         if manager: manager.handleBegin()
 
+                    elif (command == "[start-lines]"):
+                        if manager: manager.handleStartLines();
+
+                    elif (command == "[end-lines]"):
+                        if manager: manager.handleEndLines();
+
                     elif (command == "[info]"):
                         if manager: manager.handleInfoLine(rest.strip())
 
@@ -99,20 +179,14 @@ class SporkTCPHandler(socketserver.ThreadingMixIn, socketserver.StreamRequestHan
 
                 if (len(line) == 0): break
 
-            except:
+            except Exception as e:
+                print(e);
                 break
 
-server = None
+        sublime.status_message("");
 
-def serve_forever():
-    server.serve_forever()
+        conn.close()
 
-socketserver.TCPServer.allow_reuse_address = True
 
-server = socketserver.TCPServer((HOST, PORT), SporkTCPHandler)
 thread = threading.Thread(target=serve_forever)
 thread.start()
-
-def plugin_unloaded():
-    print("Unloading", server)
-    server.shutdown()
