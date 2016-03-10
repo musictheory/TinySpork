@@ -16,7 +16,7 @@ def GetWindow(project_name):
 
             continue
 
-        if (window_project_name.startswith(project_name)):
+        if (window_project_name and window_project_name.startswith(project_name)):
             return w
 
     return None
@@ -95,7 +95,7 @@ class ProjectIssueManager():
                             view.text_point(lineNumber, 0) - 1
                         ))
 
-                    view.add_regions("TinySpork", regions, scope, icon, sublime.DRAW_NO_OUTLINE | sublime.DRAW_NO_FILL | sublime.DRAW_STIPPLED_UNDERLINE | sublime.DRAW_EMPTY)
+                    view.add_regions("TinySpork", regions, scope, icon, sublime.DRAW_NO_OUTLINE | sublime.DRAW_NO_FILL | sublime.DRAW_STIPPLED_UNDERLINE)
 
         self.issueMap = { }
 
